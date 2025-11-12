@@ -1,3 +1,7 @@
+feature "state_path_prefix" {
+  default = ""
+}
+
 locals {
   project_name     = "leonomano-do-k8s-cluster"
   environment_vars = read_terragrunt_config(find_in_parent_folders("env.hcl"))
@@ -8,6 +12,7 @@ locals {
   aws_region       = local.environment_vars.locals.aws_account.region
   role_arn         = local.environment_vars.locals.aws_account.role_arn
   backend_config   = local.environment_vars.locals.backend
+  state_path_prefix = feature.state_path_prefix.value != "" ? "${feature.state_path_prefix.value}/" : ""
 
   default_tags = {
     Project = local.project_name
@@ -45,7 +50,7 @@ remote_state {
     region         = local.aws_region
     bucket         = local.backend_config.bucket
     dynamodb_table = lookup(local.backend_config, "dynamodb_table", "")
-    key            = "${path_relative_to_include()}/terraform.tfstate"
+    key            = "${path_relative_to_include()}/${local.state_path_prefix}terraform.tfstate"
     assume_role = {
       role_arn = local.role_arn
     }

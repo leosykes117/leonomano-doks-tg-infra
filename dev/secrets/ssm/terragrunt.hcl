@@ -29,5 +29,17 @@ inputs = {
       type        = "SecureString"
       secure_type = true
     }
+    cloudflare_token = {
+      name = "/account-configuration/dev/cluster-issuer-cloudflare-token"
+      description = "Cloudflare token to be used by the Cluster Issuer to validate certificates by DNS‑01 challenge"
+      type = "SecureString"
+      secure_type = true
+    }
+    cloud_flare_doks_external_dns_token = {
+      name = "/account-configuration/dev/doks-external-dns-cloudflare-token"
+      description = "Cloudflare token to be used by External DNS to manage DNS records for DigitalOcean Kubernetes clusters"
+      type = "SecureString"
+      secure_type = true
+    }
   }
 }
