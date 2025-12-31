@@ -5,7 +5,8 @@ helm template cert-manager jetstack/cert-manager \
   -f ./values.yaml \
   | tee cert-manager-rendered.yaml
 
-helm install cert-manager jetstack/cert-manager \
+helm upgrade cert-manager jetstack/cert-manager \
+  --create-namespace -i \
   --version v1.19.1 \
   --namespace cert-manager \
   -f ./values.yaml \
