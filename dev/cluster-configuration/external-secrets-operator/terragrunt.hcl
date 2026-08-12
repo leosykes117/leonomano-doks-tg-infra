@@ -2,6 +2,10 @@ feature "kube_ctx" {
   default = "minikube"
 }
 
+feature "kube_config_path" {
+  default = "~/.kube/config"
+}
+
 feature "create_eso_namespace" {
   default = true
 }
@@ -23,5 +27,7 @@ include "root" {
 
 inputs = {
   kube_ctx = feature.kube_ctx.value
+  kube_config_path = feature.kube_config_path.value
   create_eso_namespace = feature.create_eso_namespace.value
+  cluster_profile = feature.state_path_prefix.value != "" ? feature.state_path_prefix.value : ""
 }
