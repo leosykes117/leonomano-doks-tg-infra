@@ -4,14 +4,6 @@ locals {
   tf_branch = get_env("TF_SOURCE_BRANCH", "main")
 }
 
-feature "kube_ctx" {
-  default = "minikube"
-}
-
-feature "kube_config_path" {
-  default = "~/.kube/config"
-}
-
 terraform {
   source = "${local.module_repo}//cluster-configuration/traefik?ref=${local.tf_branch}"
 }
@@ -21,7 +13,4 @@ include "root" {
   expose = true
 }
 
-inputs = {
-  kube_ctx         = feature.kube_ctx.value
-  kube_config_path = feature.kube_config_path.value
-}
+inputs = {}

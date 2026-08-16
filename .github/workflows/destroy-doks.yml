@@ -1,0 +1,228 @@
+name: Destroy DOKS Cluster
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        description: Environment to destroy
+        options:
+          - dev
+          - staging
+          - prod
+        default: dev
+      confirm_destruction:
+        type: string
+        description: Type "YES I CONFIRM" to proceed with destruction (case-sensitive)
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  destroy:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+    
+    env:
+      TF_VERSION: "1.9"
+      TERRAGRUNT_VERSION: "1.1.3"
+      TG_ENV: ${{ github.event.inputs.environment || 'dev' }}
+      AWS_REGION: us-east-1
+      # Rewrites SSH git module sources (git@github.com:...) to anonymous HTTPS,
+      # since our modules repo is public and the runner has no SSH key configured.
+      GIT_MODULE_SOURCE_FIX: |
+        git config --global url."https://github.com/".insteadOf "git@github.com:"
+    
+    steps:
+      - name: Confirm destruction
+        run: |
+          if [ "${{ github.event.inputs.confirm_destruction }}" != "YES I CONFIRM" ]; then
+            echo "❌ Destruction confirmation failed."
+            echo "You must type 'YES I CONFIRM' (case-sensitive) to proceed with cluster destruction."
+            exit 1
+          fi
+          echo "✅ Destruction confirmed for ${{ env.TG_ENV }} environment"
+
+      - name: Checkout tg-infra repo
+        uses: actions/checkout@v4
+        with:
+          repository: leosykes117/leonomano-doks-tg-infra
+          ref: main
+          path: tg-infra
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Checkout cluster-addons repo
+        uses: actions/checkout@v4
+        with:
+          repository: leosykes117/leonomano-doks-cluster-addons
+          ref: main
+          path: cluster-addons
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v3
+
+      - name: Setup Kustomize
+        run: |
+          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+          sudo mv kustomize /usr/local/bin/
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+          mask-aws-account-id: false
+
+      - name: Install Terragrunt and configure module git access
+        uses: gruntwork-io/terragrunt-action@v3
+        continue-on-error: true # cluster/state may not exist if already destroyed
+        with:
+          tg_version: ${{ env.TERRAGRUNT_VERSION }}
+          tf_path: terraform
+          tg_dir: tg-infra/${{ env.TG_ENV }}/k8s-cluster
+          tg_command: output --raw kubeconfig_base64
+        env:
+          # Fires here (first Terragrunt command executed), persists in
+          # ~/.gitconfig for the rest of the job. We don't use this step's
+          # captured output (the action merges stdout/stderr, which can
+          # corrupt a raw value) — the next step re-reads it cleanly.
+          INPUT_PRE_EXEC_1: ${{ env.GIT_MODULE_SOURCE_FIX }}
+
+      - name: Retrieve kubeconfig from DOKS
+        working-directory: tg-infra/${{ env.TG_ENV }}/k8s-cluster
+        run: |
+          echo "📥 Retrieving kubeconfig from DOKS..."
+          mkdir -p ~/.kube
+          
+          # Get kubeconfig from Terraform state
+          KUBECONFIG_BASE64=$(terragrunt output --raw kubeconfig_base64 2>/dev/null || echo "")
+          
+          if [ -z "$KUBECONFIG_BASE64" ]; then
+            echo "⚠️  DOKS cluster not found or already destroyed"
+            exit 0
+          fi
+          
+          echo "$KUBECONFIG_BASE64" | base64 -d > ~/.kube/config
+          export KUBECONFIG=~/.kube/config
+          chmod 600 ~/.kube/config
+          
+          # Verify connectivity
+          if kubectl cluster-info &>/dev/null; then
+            echo "✅ Kubeconfig retrieved and cluster accessible"
+          else
+            echo "⚠️  Kubeconfig retrieved but cluster not responding (may already be destroyed)"
+          fi
+
+      - name: Delete cluster addons (Traefik → cert-manager → ESO)
+        env:
+          KUBECONFIG: ~/.kube/config
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          
+          echo "🗑️  Deleting cluster addons in reverse order..."
+          cd cluster-addons
+          
+          # Delete Traefik (ingress controller)
+          echo "  1️⃣  Deleting Traefik..."
+          cd dev/traefik
+          make delete 2>/dev/null || echo "     (Traefik already deleted or make target not found)"
+          cd ../..
+          
+          # Delete cert-manager (TLS provider)
+          echo "  2️⃣  Deleting cert-manager..."
+          cd dev/cert-manager
+          make delete 2>/dev/null || echo "     (cert-manager already deleted or make target not found)"
+          cd ../..
+          
+          # Delete External Secrets Operator (secret provider)
+          echo "  3️⃣  Deleting External Secrets Operator..."
+          cd dev/external-secrets-operator
+          make delete 2>/dev/null || echo "     (ESO already deleted or make target not found)"
+          cd ../..
+          
+          echo "✅ Addon deletion attempted"
+
+      - name: Destroy Traefik infrastructure
+        uses: gruntwork-io/terragrunt-action@v3
+        continue-on-error: true
+        with:
+          tg_version: ${{ env.TERRAGRUNT_VERSION }}
+          tf_path: terraform
+          tg_dir: tg-infra/${{ env.TG_ENV }}/cluster-configuration/traefik
+          tg_command: destroy
+
+      - name: Destroy External Secrets Operator infrastructure
+        uses: gruntwork-io/terragrunt-action@v3
+        continue-on-error: true
+        with:
+          tg_version: ${{ env.TERRAGRUNT_VERSION }}
+          tf_path: terraform
+          tg_dir: tg-infra/${{ env.TG_ENV }}/cluster-configuration/external-secrets-operator
+          tg_command: destroy
+
+      - name: Delete ESO AWS credentials Secret
+        env:
+          KUBECONFIG: ~/.kube/config
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          
+          echo "🔑 Deleting eso-dev-aws-creds Secret..."
+          
+          if kubectl get secret eso-dev-aws-creds -n external-secrets &>/dev/null; then
+            kubectl delete secret eso-dev-aws-creds -n external-secrets
+            echo "✅ ESO credentials Secret deleted"
+          else
+            echo "ℹ️  ESO credentials Secret not found (already deleted)"
+          fi
+
+      - name: Destroy DOKS cluster
+        uses: gruntwork-io/terragrunt-action@v3
+        with:
+          tg_version: ${{ env.TERRAGRUNT_VERSION }}
+          tf_path: terraform
+          tg_dir: tg-infra/${{ env.TG_ENV }}/k8s-cluster
+          tg_command: destroy
+
+      - name: Verify cluster destruction
+        continue-on-error: true
+        run: |
+          echo "🔍 Verifying cluster destruction..."
+          
+          cd tg-infra/${{ env.TG_ENV }}/k8s-cluster
+          
+          if terragrunt output --raw kubeconfig_base64 2>/dev/null; then
+            echo "⚠️  Kubeconfig output still exists (cluster may not be fully destroyed)"
+          else
+            echo "✅ Cluster successfully destroyed (no kubeconfig output found)"
+          fi
+
+      - name: Summary
+        if: success()
+        run: |
+          echo "🎉 DOKS Cluster Destruction Complete!"
+          echo ""
+          echo "Environment: ${{ env.TG_ENV }}"
+          echo "Region: sfo2"
+          echo ""
+          echo "The following have been removed:"
+          echo "  ✓ Traefik ingress controller and configuration"
+          echo "  ✓ cert-manager TLS provider and certificates"
+          echo "  ✓ External Secrets Operator and AWS credentials Secret"
+          echo "  ✓ DOKS cluster and all nodes"
+          echo "  ✓ AWS infrastructure (IAM user, access keys, SSM parameters)"
+          echo ""
+          echo "Note: Some resources may take additional time to fully clean up in AWS"
