@@ -1,0 +1,5 @@
+[tools]
+# Pinned here (rather than as gruntwork-io/terragrunt-action inputs) so the
+# version is defined once and picked up automatically by the action across
+# every step in provision-doks.yml / destroy-doks.yml.
+terragrunt = "1.1.3"

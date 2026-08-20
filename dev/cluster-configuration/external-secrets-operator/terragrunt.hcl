@@ -13,6 +13,4 @@ include "root" {
   expose = true
 }
 
-inputs = {
-  cluster_profile = feature.state_path_prefix.value != "" ? feature.state_path_prefix.value : ""
-}
+inputs = {}
