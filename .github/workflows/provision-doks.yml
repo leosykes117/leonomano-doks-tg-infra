@@ -11,6 +11,14 @@ on:
           - staging
           - prod
         default: dev
+      cluster_addons_ref:
+        type: string
+        description: "Branch/tag/SHA of cluster-addons to use"
+        default: main
+      tf_modules_ref:
+        type: string
+        description: "Branch/tag/SHA of leonomano-doks-tf-modules to use (passed to Terragrunt as TF_SOURCE_BRANCH)"
+        default: main
 
 permissions:
   contents: read
@@ -25,6 +33,7 @@ jobs:
       TF_VERSION: "1.9"
       TG_ENV: ${{ github.event.inputs.environment || 'dev' }}
       AWS_REGION: us-east-1
+      TF_SOURCE_BRANCH: ${{ inputs.tf_modules_ref }}
       # Rewrites SSH git module sources (git@github.com:...) to anonymous HTTPS,
       # since our modules repo is public and the runner has no SSH key configured.
       GIT_MODULE_SOURCE_FIX: |
@@ -42,19 +51,17 @@ jobs:
             leonomano-doks-tf-modules
             leonomano-doks-cluster-addons
 
-      - name: Checkout tg-infra repo
+      - name: Checkout tg-infra repo (self)
         uses: actions/checkout@v4
         with:
-          repository: leosykes117/leonomano-doks-tg-infra
-          ref: main
+          ref: ${{ github.ref }}
           path: tg-infra
-          token: ${{ steps.app-token.outputs.token }}
 
       - name: Checkout cluster-addons repo
         uses: actions/checkout@v4
         with:
           repository: leosykes117/leonomano-doks-cluster-addons
-          ref: main
+          ref: ${{ inputs.cluster_addons_ref }}
           path: cluster-addons
           token: ${{ steps.app-token.outputs.token }}
 
