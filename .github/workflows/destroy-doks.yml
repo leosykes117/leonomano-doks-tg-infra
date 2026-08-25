@@ -1,0 +1,311 @@
+name: Destroy DOKS Cluster
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        description: Environment to destroy
+        options:
+          - dev
+          - staging
+          - prod
+        default: dev
+      confirm_destruction:
+        type: string
+        description: Type "YES I CONFIRM" to proceed with destruction (case-sensitive)
+        required: true
+      cluster_addons_ref:
+        type: string
+        description: "Branch/tag/SHA of cluster-addons to use"
+        default: main
+      tf_modules_ref:
+        type: string
+        description: "Branch/tag/SHA of leonomano-doks-tf-modules to use (passed to Terragrunt as TF_SOURCE_BRANCH)"
+        default: main
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  destroy:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+
+    env:
+      TF_VERSION: "1.9"
+      TG_ENV: ${{ github.event.inputs.environment || 'dev' }}
+      AWS_REGION: us-east-1
+      TF_SOURCE_BRANCH: ${{ inputs.tf_modules_ref }}
+      # Rewrites SSH git module sources (git@github.com:...) to anonymous HTTPS,
+      # since our modules repo is public and the runner has no SSH key configured.
+      GIT_MODULE_SOURCE_FIX: |
+        git config --global url."https://github.com/".insteadOf "git@github.com:"
+
+    steps:
+      - name: Confirm destruction
+        run: |
+          if [ "${{ github.event.inputs.confirm_destruction }}" != "YES I CONFIRM" ]; then
+            echo "❌ Destruction confirmation failed."
+            echo "You must type 'YES I CONFIRM' (case-sensitive) to proceed with cluster destruction."
+            exit 1
+          fi
+          echo "✅ Destruction confirmed for ${{ env.TG_ENV }} environment"
+
+      - name: Generate App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          repositories: |
+            leonomano-doks-tf-modules
+            leonomano-doks-cluster-addons
+
+      - name: Checkout tg-infra repo (self)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          path: tg-infra
+
+      - name: Checkout cluster-addons repo
+        uses: actions/checkout@v4
+        with:
+          repository: leosykes117/leonomano-doks-cluster-addons
+          ref: ${{ inputs.cluster_addons_ref }}
+          path: cluster-addons
+          token: ${{ steps.app-token.outputs.token }}
+
+      # gruntwork-io/terragrunt-action discovers mise.toml relative to
+      # $GITHUB_WORKSPACE (the runner root), not tg_dir.
+      - name: Expose mise.toml at workspace root
+        run: cp tg-infra/mise.toml ./mise.toml
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v3
+
+      - name: Setup Kustomize
+        run: |
+          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+          sudo mv kustomize /usr/local/bin/
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+          mask-aws-account-id: false
+
+      # ── k8s-cluster: does it have anything to destroy? ──────────────────
+      # `terragrunt plan -destroy` refreshes state against the real
+      # DigitalOcean API before computing the plan
+      - name: Check k8s-cluster for resources to destroy
+        id: check_cluster
+        working-directory: tg-infra/${{ env.TG_ENV }}/k8s-cluster
+        run: |
+          set +e
+          terragrunt plan -destroy -detailed-exitcode -out=destroy.tfplan
+          EXIT_CODE=$?
+          set -e
+          case $EXIT_CODE in
+            0)
+              echo "has_resources=false" >> "$GITHUB_OUTPUT"
+              echo "ℹ️  No resources to destroy for k8s-cluster — nothing to do."
+              ;;
+            2)
+              echo "has_resources=true" >> "$GITHUB_OUTPUT"
+              echo "ℹ️  Resources found for k8s-cluster — will proceed with destroy."
+              ;;
+            *)
+              echo "::error::terragrunt plan -destroy failed unexpectedly for k8s-cluster (exit $EXIT_CODE)"
+              exit 1
+              ;;
+          esac
+        env:
+          INPUT_PRE_EXEC_1: ${{ env.GIT_MODULE_SOURCE_FIX }}
+
+      - name: Retrieve DigitalOcean token from SSM
+        id: do_token
+        if: steps.check_cluster.outputs.has_resources == 'true'
+        run: |
+          set -euo pipefail
+          TOKEN=$(aws ssm get-parameter \
+            --name "/account-configuration/${{ env.TG_ENV }}/digital_ocean_token" \
+            --with-decryption \
+            --query 'Parameter.Value' \
+            --output text \
+            --region "${{ env.AWS_REGION }}")
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Install doctl
+        if: steps.check_cluster.outputs.has_resources == 'true'
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ steps.do_token.outputs.token }}
+
+      - name: Mint short-lived kubeconfig for this run
+        if: steps.check_cluster.outputs.has_resources == 'true'
+        working-directory: tg-infra/${{ env.TG_ENV }}/k8s-cluster
+        run: |
+          set -euo pipefail
+          echo "📥 Minting kubeconfig from DOKS via doctl..."
+          CLUSTER_NAME=$(terragrunt output -json doks_cluster | jq -r '.name')
+          # Short expiry: this credential only needs to live for the
+          # duration of this job; the runner (and the credential with it)
+          # is destroyed when the job ends.
+          doctl kubernetes cluster kubeconfig save "$CLUSTER_NAME" --expiry-seconds 3600
+          kubectl cluster-info
+          echo "✅ Kubeconfig minted and cluster accessible"
+
+      - name: Delete cluster addons (Traefik → cert-manager → ESO)
+        if: steps.check_cluster.outputs.has_resources == 'true'
+        env:
+          KUBECONFIG: ~/.kube/config
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          echo "🗑️  Deleting cluster addons in reverse order..."
+          cd cluster-addons
+
+          echo "  1️⃣  Deleting Traefik..."
+          cd dev/traefik
+          make delete 2>/dev/null || echo "     (Traefik already deleted or make target not found)"
+          cd ../..
+
+          echo "  2️⃣  Deleting cert-manager..."
+          cd dev/cert-manager
+          make delete 2>/dev/null || echo "     (cert-manager already deleted or make target not found)"
+          cd ../..
+
+          echo "  3️⃣  Deleting External Secrets Operator..."
+          cd dev/external-secrets-operator
+          make delete 2>/dev/null || echo "     (ESO already deleted or make target not found)"
+          cd ../..
+
+          echo "✅ Addon deletion attempted"
+
+      - name: Check Traefik infrastructure for resources to destroy
+        id: check_traefik
+        working-directory: tg-infra/${{ env.TG_ENV }}/cluster-configuration/traefik
+        run: |
+          set +e
+          terragrunt plan -destroy -detailed-exitcode -out=destroy.tfplan
+          EXIT_CODE=$?
+          set -e
+          case $EXIT_CODE in
+            0)
+              echo "has_resources=false" >> "$GITHUB_OUTPUT"
+              echo "ℹ️  No resources to destroy for Traefik infra — nothing to do."
+              ;;
+            2)
+              echo "has_resources=true" >> "$GITHUB_OUTPUT"
+              echo "ℹ️  Resources found for Traefik infra — will proceed with destroy."
+              ;;
+            *)
+              echo "::error::terragrunt plan -destroy failed unexpectedly for Traefik infra (exit $EXIT_CODE)"
+              exit 1
+              ;;
+          esac
+
+      - name: Destroy Traefik infrastructure
+        if: steps.check_traefik.outputs.has_resources == 'true'
+        working-directory: tg-infra/${{ env.TG_ENV }}/cluster-configuration/traefik
+        run: terragrunt apply destroy.tfplan
+
+      # ── ESO module: same gate. This is the module that surfaced the
+      # iam:GetUser/GetUserPolicy AccessDenied earlier — with the old
+      # blanket continue-on-error, that failure would have been hidden,
+      # leaving the IAM user/access-key/SSM param orphaned in AWS.
+      - name: Check External Secrets Operator infrastructure for resources to destroy
+        id: check_eso
+        working-directory: tg-infra/${{ env.TG_ENV }}/cluster-configuration/external-secrets-operator
+        run: |
+          set +e
+          terragrunt plan -destroy -detailed-exitcode -out=destroy.tfplan
+          EXIT_CODE=$?
+          set -e
+          case $EXIT_CODE in
+            0)
+              echo "has_resources=false" >> "$GITHUB_OUTPUT"
+              echo "ℹ️  No resources to destroy for ESO infra — nothing to do."
+              ;;
+            2)
+              echo "has_resources=true" >> "$GITHUB_OUTPUT"
+              echo "ℹ️  Resources found for ESO infra — will proceed with destroy."
+              ;;
+            *)
+              echo "::error::terragrunt plan -destroy failed unexpectedly for ESO infra (exit $EXIT_CODE)"
+              exit 1
+              ;;
+          esac
+
+      - name: Destroy External Secrets Operator infrastructure
+        if: steps.check_eso.outputs.has_resources == 'true'
+        working-directory: tg-infra/${{ env.TG_ENV }}/cluster-configuration/external-secrets-operator
+        run: terragrunt apply destroy.tfplan
+
+      - name: Delete ESO AWS credentials Secret
+        if: steps.check_cluster.outputs.has_resources == 'true'
+        env:
+          KUBECONFIG: ~/.kube/config
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          echo "🔑 Deleting eso-dev-aws-creds Secret..."
+          if kubectl get secret eso-dev-aws-creds -n external-secrets &>/dev/null; then
+            kubectl delete secret eso-dev-aws-creds -n external-secrets
+            echo "✅ ESO credentials Secret deleted"
+          else
+            echo "ℹ️  ESO credentials Secret not found (already deleted)"
+          fi
+
+      # Reuses the plan captured in "Check k8s-cluster for resources to
+      # destroy" — applying the exact validated plan instead of
+      # recomputing avoids a TOCTOU gap between check and destroy.
+      - name: Destroy DOKS cluster
+        if: steps.check_cluster.outputs.has_resources == 'true'
+        working-directory: tg-infra/${{ env.TG_ENV }}/k8s-cluster
+        run: terragrunt apply destroy.tfplan
+
+      - name: Verify cluster destruction
+        if: steps.check_cluster.outputs.has_resources == 'true'
+        continue-on-error: true
+        working-directory: tg-infra/${{ env.TG_ENV }}/k8s-cluster
+        run: |
+          echo "🔍 Verifying cluster destruction..."
+          if terragrunt output --raw doks_cluster 2>/dev/null; then
+            echo "⚠️  Kubeconfig output still exists (cluster may not be fully destroyed)"
+          else
+            echo "✅ Cluster successfully destroyed (no kubeconfig output found)"
+          fi
+
+      - name: Summary
+        if: success()
+        run: |
+          echo "🎉 DOKS Cluster Destruction Complete!"
+          echo ""
+          echo "Environment: ${{ env.TG_ENV }}"
+          echo ""
+          if [ "${{ steps.check_cluster.outputs.has_resources }}" == "true" ]; then
+            echo "The following have been removed:"
+            echo "  ✓ Traefik ingress controller and configuration"
+            echo "  ✓ cert-manager TLS provider and certificates"
+            echo "  ✓ External Secrets Operator and AWS credentials Secret"
+            echo "  ✓ DOKS cluster and all nodes"
+            echo "  ✓ AWS infrastructure (IAM user, access keys, SSM parameters)"
+            echo ""
+            echo "Note: Some resources may take additional time to fully clean up in AWS"
+          else
+            echo "Nothing to do — no Terraform-managed resources were found for this environment."
+          fi
