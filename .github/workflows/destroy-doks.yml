@@ -143,30 +143,35 @@ jobs:
       - name: Mint short-lived kubeconfig for this run
         working-directory: tg-infra/${{ env.TG_ENV }}/k8s-cluster
         run: |
+          set -uo pipefail
           echo "📥 Minting kubeconfig from DOKS via doctl..."
 
-          # Cluster name comes from the existing doks_cluster Terraform
-          # output. If the k8s-cluster unit has no state (already destroyed
-          # in a prior run), this is empty and we skip gracefully.
-          CLUSTER_NAME=$(terragrunt output -json doks_cluster 2>/dev/null | jq -r '.name // empty')
+          OUTPUT_JSON=$(terragrunt output -json doks_cluster 2>&1)
+          OUTPUT_EXIT=$?
+
+          if [ $OUTPUT_EXIT -ne 0 ]; then
+            # if the error is anything else releated to permissions,
+            # network, backend errors must fail loud.
+            if echo "$OUTPUT_JSON" | grep -qiE "no state file was found|no outputs found|does not exist"; then
+              echo "::warning::No Terraform state found for k8s-cluster (${TG_ENV}) — assuming already destroyed."
+              exit 0
+            fi
+
+            echo "::error::terragrunt output failed for an unexpected reason — refusing to assume the cluster is already destroyed."
+            echo "$OUTPUT_JSON"
+            exit 1
+          fi
+
+          CLUSTER_NAME=$(echo "$OUTPUT_JSON" | jq -r '.name // empty')
 
           if [ -z "$CLUSTER_NAME" ]; then
-            echo "⚠️  DOKS cluster not found or already destroyed"
-            exit 0
+            echo "::error::terragrunt output succeeded but 'name' was empty — output shape may have changed."
+            exit 1
           fi
 
-          # Short expiry: this credential only needs to live for the
-          # duration of this job; the runner (and the credential with it)
-          # is destroyed when the job ends.
-          if doctl kubernetes cluster kubeconfig save "$CLUSTER_NAME" --expiry-seconds 3600; then
-            if kubectl cluster-info &>/dev/null; then
-              echo "✅ Kubeconfig minted and cluster accessible"
-            else
-              echo "⚠️  Kubeconfig minted but cluster not responding (may already be destroyed)"
-            fi
-          else
-            echo "⚠️  Could not mint kubeconfig (cluster may already be destroyed)"
-          fi
+          doctl kubernetes cluster kubeconfig save "$CLUSTER_NAME" --expiry-seconds 3600
+          kubectl cluster-info
+          echo "✅ Kubeconfig minted and cluster accessible"
 
       - name: Delete cluster addons (Traefik → cert-manager → ESO)
         env:
