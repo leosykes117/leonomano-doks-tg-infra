@@ -284,7 +284,7 @@ jobs:
         working-directory: tg-infra/${{ env.TG_ENV }}/k8s-cluster
         run: |
           echo "🔍 Verifying cluster destruction..."
-          if terragrunt output --raw kubeconfig_base64 2>/dev/null; then
+          if terragrunt output --raw doks_cluster 2>/dev/null; then
             echo "⚠️  Kubeconfig output still exists (cluster may not be fully destroyed)"
           else
             echo "✅ Cluster successfully destroyed (no kubeconfig output found)"
