@@ -106,6 +106,13 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           mask-aws-account-id: false
 
+      - name: Install Terragrunt and OpenTofu
+        uses: gruntwork-io/terragrunt-action@v3
+        with:
+          tf_path: terraform
+        env:
+          INPUT_PRE_EXEC_1: ${{ env.GIT_MODULE_SOURCE_FIX }}
+
       # ── k8s-cluster: does it have anything to destroy? ──────────────────
       # `terragrunt plan -destroy` refreshes state against the real
       # DigitalOcean API before computing the plan
