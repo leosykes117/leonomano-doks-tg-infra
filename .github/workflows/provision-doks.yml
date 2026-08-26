@@ -160,8 +160,8 @@ jobs:
           github_token: ${{ steps.app-token.outputs.token }}
 
       - name: Create ESO AWS credentials Secret from SSM Parameter
-        env:
-          KUBECONFIG: ~/.kube/config
+        #env:
+        #KUBECONFIG: ~/.kube/config
         run: |
           set -euo pipefail
 
@@ -206,8 +206,8 @@ jobs:
           echo "✅ ESO credentials Secret created"
 
       - name: Apply cluster addons (ESO → cert-manager → Traefik)
-        env:
-          KUBECONFIG: ~/.kube/config
+        #env:
+        #KUBECONFIG: ~/.kube/config
         run: |
           set -euo pipefail
 
@@ -253,8 +253,8 @@ jobs:
           echo "✅ All addons applied and ready"
 
       - name: Verify cluster and addons
-        env:
-          KUBECONFIG: ~/.kube/config
+        #env:
+        #KUBECONFIG: ~/.kube/config
         run: |
           echo "🔍 Verifying cluster and addon deployments..."
 
@@ -278,8 +278,8 @@ jobs:
           kubectl cluster-info | grep -E "Kubernetes master|server"
 
       - name: Output cluster access information
-        env:
-          KUBECONFIG: ~/.kube/config
+        #env:
+        #KUBECONFIG: ~/.kube/config
         if: success()
         run: |
           echo "🎉 DOKS Cluster Provisioned Successfully!"

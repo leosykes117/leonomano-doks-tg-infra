@@ -179,8 +179,8 @@ jobs:
 
       - name: Delete cluster addons (Traefik → cert-manager → ESO)
         if: steps.check_cluster.outputs.has_resources == 'true'
-        env:
-          KUBECONFIG: ~/.kube/config
+        #env:
+        #KUBECONFIG: ~/.kube/config
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -266,8 +266,8 @@ jobs:
 
       - name: Delete ESO AWS credentials Secret
         if: steps.check_cluster.outputs.has_resources == 'true'
-        env:
-          KUBECONFIG: ~/.kube/config
+        #env:
+        #KUBECONFIG: ~/.kube/config
         continue-on-error: true
         run: |
           set -euo pipefail
