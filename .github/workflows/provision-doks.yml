@@ -275,7 +275,7 @@ jobs:
           echo "✅ Cluster provisioning complete!"
           echo ""
           echo "📋 Cluster Info:"
-          kubectl cluster-info | grep -E "Kubernetes master|server"
+          kubectl cluster-info
 
       - name: Output cluster access information
         #env:
