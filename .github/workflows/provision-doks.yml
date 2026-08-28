@@ -238,8 +238,20 @@ jobs:
             -n cert-manager \
             --timeout=5m
 
+          # Apply external-dns (requires ESO to retrieve Cloudflare token from AWS SSM Parameter Store)
+          echo "  3️⃣  Applying external-dns..."
+          cd dev/external-dns
+          make apply
+          cd ../..
+
+          # Wait for external-dns to be ready before applying Traefik
+          echo "  ⏳ Waiting for external-dns deployment to be ready..."
+          kubectl rollout status deployment/external-dns \
+            -n external-dns \
+            --timeout=5m
+
           # Apply Traefik (ingress controller)
-          echo "  3️⃣  Applying Traefik..."
+          echo "  4️⃣  Applying Traefik..."
           cd dev/traefik
           make apply
           cd ../..
