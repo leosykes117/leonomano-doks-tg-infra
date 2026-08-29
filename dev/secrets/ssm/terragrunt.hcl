@@ -41,5 +41,11 @@ inputs = {
       type = "SecureString"
       secure_type = true
     }
+    minio_access_keys = {
+      name        = "/account-configuration/dev/minio-access-keys"
+      description = "MinIO Access Keys used in the minikube cluster"
+      type        = "SecureString"
+      secure_type = true
+    }
   }
 }

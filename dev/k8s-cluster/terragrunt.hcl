@@ -20,6 +20,7 @@ inputs = {
     size       = "s-2vcpu-4gb"
     auto_scale = true
     min_nodes  = 1
+    node_count = 2
     max_nodes  = 3
     tags       = ["default-nodepool"]
   }]

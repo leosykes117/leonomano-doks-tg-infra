@@ -63,5 +63,6 @@ inputs = {
   project_name = local.project_name
   aws_region   = local.aws_region
   env          = local.env
+  aws_account_id = local.aws_account_id
   aws_default_tags = local.default_tags
 }

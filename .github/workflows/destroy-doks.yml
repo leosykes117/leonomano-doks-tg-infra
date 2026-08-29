@@ -110,8 +110,10 @@ jobs:
         uses: gruntwork-io/terragrunt-action@v3
         with:
           tf_path: terraform
-        env:
-          INPUT_PRE_EXEC_1: ${{ env.GIT_MODULE_SOURCE_FIX }}
+
+      - name: Configure git for anonymous HTTPS module access
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
 
       # ── k8s-cluster: does it have anything to destroy? ──────────────────
       # `terragrunt plan -destroy` refreshes state against the real
@@ -177,8 +179,8 @@ jobs:
 
       - name: Delete cluster addons (Traefik → cert-manager → ESO)
         if: steps.check_cluster.outputs.has_resources == 'true'
-        env:
-          KUBECONFIG: ~/.kube/config
+        #env:
+        #KUBECONFIG: ~/.kube/config
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -190,12 +192,17 @@ jobs:
           make delete 2>/dev/null || echo "     (Traefik already deleted or make target not found)"
           cd ../..
 
-          echo "  2️⃣  Deleting cert-manager..."
+          echo "  2️⃣  Deleting external-dns..."
+          cd dev/external-dns
+          make delete 2>/dev/null || echo "     (external-dns already deleted or make target not found)"
+          cd ../..
+
+          echo "  3️⃣  Deleting cert-manager..."
           cd dev/cert-manager
           make delete 2>/dev/null || echo "     (cert-manager already deleted or make target not found)"
           cd ../..
 
-          echo "  3️⃣  Deleting External Secrets Operator..."
+          echo "  4️⃣  Deleting External Secrets Operator..."
           cd dev/external-secrets-operator
           make delete 2>/dev/null || echo "     (ESO already deleted or make target not found)"
           cd ../..
@@ -264,8 +271,8 @@ jobs:
 
       - name: Delete ESO AWS credentials Secret
         if: steps.check_cluster.outputs.has_resources == 'true'
-        env:
-          KUBECONFIG: ~/.kube/config
+        #env:
+        #KUBECONFIG: ~/.kube/config
         continue-on-error: true
         run: |
           set -euo pipefail

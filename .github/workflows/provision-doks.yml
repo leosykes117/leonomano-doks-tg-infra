@@ -160,8 +160,8 @@ jobs:
           github_token: ${{ steps.app-token.outputs.token }}
 
       - name: Create ESO AWS credentials Secret from SSM Parameter
-        env:
-          KUBECONFIG: ~/.kube/config
+        #env:
+        #KUBECONFIG: ~/.kube/config
         run: |
           set -euo pipefail
 
@@ -206,8 +206,8 @@ jobs:
           echo "✅ ESO credentials Secret created"
 
       - name: Apply cluster addons (ESO → cert-manager → Traefik)
-        env:
-          KUBECONFIG: ~/.kube/config
+        #env:
+        #KUBECONFIG: ~/.kube/config
         run: |
           set -euo pipefail
 
@@ -238,8 +238,20 @@ jobs:
             -n cert-manager \
             --timeout=5m
 
+          # Apply external-dns (requires ESO to retrieve Cloudflare token from AWS SSM Parameter Store)
+          echo "  3️⃣  Applying external-dns..."
+          cd dev/external-dns
+          make apply
+          cd ../..
+
+          # Wait for external-dns to be ready before applying Traefik
+          echo "  ⏳ Waiting for external-dns deployment to be ready..."
+          kubectl rollout status deployment/external-dns \
+            -n external-dns \
+            --timeout=5m
+
           # Apply Traefik (ingress controller)
-          echo "  3️⃣  Applying Traefik..."
+          echo "  4️⃣  Applying Traefik..."
           cd dev/traefik
           make apply
           cd ../..
@@ -253,8 +265,8 @@ jobs:
           echo "✅ All addons applied and ready"
 
       - name: Verify cluster and addons
-        env:
-          KUBECONFIG: ~/.kube/config
+        #env:
+        #KUBECONFIG: ~/.kube/config
         run: |
           echo "🔍 Verifying cluster and addon deployments..."
 
@@ -275,11 +287,11 @@ jobs:
           echo "✅ Cluster provisioning complete!"
           echo ""
           echo "📋 Cluster Info:"
-          kubectl cluster-info | grep -E "Kubernetes master|server"
+          kubectl cluster-info
 
       - name: Output cluster access information
-        env:
-          KUBECONFIG: ~/.kube/config
+        #env:
+        #KUBECONFIG: ~/.kube/config
         if: success()
         run: |
           echo "🎉 DOKS Cluster Provisioned Successfully!"

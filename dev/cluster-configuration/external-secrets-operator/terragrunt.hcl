@@ -1,11 +1,3 @@
-feature "kube_ctx" {
-  default = "minikube"
-}
-
-feature "create_eso_namespace" {
-  default = true
-}
-
 locals {
   global_config = read_terragrunt_config(find_in_parent_folders("global.hcl")).locals
   module_repo = local.global_config.leonomano_modules_repo
@@ -21,7 +13,4 @@ include "root" {
   expose = true
 }
 
-inputs = {
-  kube_ctx = feature.kube_ctx.value
-  create_eso_namespace = feature.create_eso_namespace.value
-}
+inputs = {}

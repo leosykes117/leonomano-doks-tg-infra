@@ -5,14 +5,7 @@ locals {
 }
 
 terraform {
-  source = "${local.module_repo}//cluster-configuration/cert-manager?ref=${local.tf_branch}"
-  before_hook "remove_aws_provider" {
-    commands = ["init", "plan", "apply", "destroy"]
-    execute  = [
-      "bash", "-c",
-      "rm -vf aws.provider.tf"
-    ]
-  }
+  source = "${local.module_repo}//cluster-configuration/traefik?ref=${local.tf_branch}"
 }
 
 include "root" {
